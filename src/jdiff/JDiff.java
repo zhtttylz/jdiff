@@ -1,12 +1,16 @@
 package jdiff;
 
-import com.sun.javadoc.*;
-
-import java.util.*;
 import java.io.*;
-import java.lang.reflect.*; // Used for invoking Javadoc indirectly
-import java.lang.Runtime;
 import java.lang.Process;
+import java.lang.Runtime;
+import java.lang.reflect.*; // Used for invoking Javadoc indirectly
+import java.util.*;
+
+import javax.lang.model.SourceVersion;
+
+import jdk.javadoc.doclet.Doclet;
+import jdk.javadoc.doclet.DocletEnvironment;
+import jdk.javadoc.doclet.Reporter;
 
 /**
  * Generates HTML describing the changes between two sets of Java source code.
@@ -14,37 +18,55 @@ import java.lang.Process;
  * See the file LICENSE.txt for copyright details.
  * @author Matthew Doar, mdoar@pobox.com.
  */
-public class JDiff extends Doclet {
+public class JDiff implements Doclet {
 
-    public static LanguageVersion languageVersion(){
-      return LanguageVersion.JAVA_1_5;
-    } 
-    /**
-     * Doclet-mandated start method. Everything begins here.
-     *
-     * @param root  a RootDoc object passed by Javadoc
-     * @return true if document generation succeeds
-     */
-    public static boolean start(RootDoc root) {
-        if (root != null)
+    private Reporter reporter;
+    private final List<String[]> recordedOptions = new ArrayList<>();
+
+    @Override
+    public void init(Locale locale, Reporter reporter) {
+        this.reporter = reporter;
+    }
+
+    @Override
+    public String getName() {
+        return "JDiff";
+    }
+
+    @Override
+    public Set<? extends Doclet.Option> getSupportedOptions() {
+        return Options.getSupportedOptions(recordedOptions);
+    }
+
+    @Override
+    public SourceVersion getSupportedSourceVersion() {
+        return SourceVersion.latestSupported();
+    }
+
+    @Override
+    public boolean run(DocletEnvironment environment) {
+        if (!Options.processOptions(recordedOptions, reporter)) {
+            return false;
+        }
+        if (environment != null) {
             System.out.println("JDiff: doclet started ...");
-        JDiff jd = new JDiff();
-        return jd.startGeneration(root);
+        }
+        return startGeneration(environment);
     }
 
     /**
      * Generate the summary of the APIs.
      *
-     * @param root  the RootDoc object passed by Javadoc
+     * @param environment  the DocletEnvironment object passed by Javadoc
      * @return true if no problems encountered within JDiff
      */
-    protected boolean startGeneration(RootDoc newRoot) {
+    protected boolean startGeneration(DocletEnvironment environment) {
         long startTime = System.currentTimeMillis();
 
         // Open the file where the XML representing the API will be stored.
         // and generate the XML for the API into it.
         if (writeXML) {
-            RootDocToXML.writeXML(newRoot);           
+            RootDocToXML.writeXML(environment);
         }
 
         if (compareAPIs) {
@@ -134,36 +156,6 @@ public class JDiff extends Doclet {
        return true;
     }
 
-//
-// Option processing
-// 
-
-    /**
-     * This method is called by Javadoc to
-     * parse the options it does not recognize. It then calls
-     * {@link #validOptions} to validate them.
-     *
-     * @param option  a String containing an option
-     * @return an int telling how many components that option has
-     */
-    public static int optionLength(String option) {
-        return Options.optionLength(option);
-    }
-
-    /**
-     * After parsing the available options using {@link #optionLength},
-     * Javadoc invokes this method with an array of options-arrays.
-     *
-     * @param options   an array of String arrays, one per option
-     * @param reporter  a DocErrorReporter for generating error messages
-     * @return true if no errors were found, and all options are
-     *         valid
-     */
-    public static boolean validOptions(String[][] options, 
-                                       DocErrorReporter reporter) {
-        return Options.validOptions(options, reporter);
-    }
-    
     /** 
      * This method is only called when running JDiff as a standalone
      * application, and uses ANT to execute the build configuration in the 

@@ -1,12 +1,25 @@
 package jdiff;
 
-import com.sun.javadoc.*;
-import com.sun.javadoc.ParameterizedType;
-import com.sun.javadoc.Type;
-
-import java.util.*;
 import java.io.*;
-import java.lang.reflect.*;
+import java.util.*;
+
+import javax.lang.model.element.Element;
+import javax.lang.model.element.ExecutableElement;
+import javax.lang.model.element.Modifier;
+import javax.lang.model.element.PackageElement;
+import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.VariableElement;
+import javax.lang.model.type.DeclaredType;
+import javax.lang.model.type.TypeKind;
+import javax.lang.model.type.TypeMirror;
+import javax.lang.model.util.Elements;
+import javax.lang.model.util.Types;
+
+import com.sun.source.tree.CompilationUnitTree;
+import com.sun.source.util.DocTrees;
+import com.sun.source.util.TreePath;
+
+import jdk.javadoc.doclet.DocletEnvironment;
 
 /**
  * Converts a Javadoc RootDoc object into a representation in an 
@@ -17,22 +30,80 @@ import java.lang.reflect.*;
  */
 public class RootDocToXML {
 
-    /** Default constructor. */
-    public RootDocToXML() {
+    private final DocletEnvironment environment;
+    private final DocTrees docTrees;
+    private final Elements elementUtils;
+    private final Types typeUtils;
+    private final Map<String, List<TypeElement>> packageTypes = new TreeMap();
+    private final Map<String, PackageElement> packageElements = new HashMap();
+    private final Map<String, List<TypeElement>> explicitlySpecifiedClasses = new HashMap();
+
+    public RootDocToXML(DocletEnvironment environment) {
+        this.environment = environment;
+        this.docTrees = environment.getDocTrees();
+        this.elementUtils = environment.getElementUtils();
+        this.typeUtils = environment.getTypeUtils();
+        gatherSpecifiedElements();
+        gatherIncludedElements();
+    }
+
+    private void gatherSpecifiedElements() {
+        for (Element element : environment.getSpecifiedElements()) {
+            if (element instanceof TypeElement) {
+                TypeElement type = (TypeElement) element;
+                PackageElement pkg = elementUtils.getPackageOf(type);
+                if (pkg != null) {
+                    String pkgName = pkg.getQualifiedName().toString();
+                    explicitlySpecifiedClasses
+                        .computeIfAbsent(pkgName, k -> new ArrayList())
+                        .add(type);
+                    packageElements.putIfAbsent(pkgName, pkg);
+                }
+            } else if (element instanceof PackageElement) {
+                PackageElement pkg = (PackageElement) element;
+                packageElements.putIfAbsent(pkg.getQualifiedName().toString(), pkg);
+            }
+        }
+    }
+
+    private void gatherIncludedElements() {
+        for (Element element : environment.getIncludedElements()) {
+            if (element instanceof PackageElement) {
+                PackageElement pkg = (PackageElement) element;
+                packageElements.putIfAbsent(pkg.getQualifiedName().toString(), pkg);
+            } else if (element instanceof TypeElement) {
+                TypeElement type = (TypeElement) element;
+                PackageElement pkg = elementUtils.getPackageOf(type);
+                if (pkg == null) {
+                    continue;
+                }
+                String pkgName = pkg.getQualifiedName().toString();
+                packageElements.putIfAbsent(pkgName, pkg);
+                packageTypes.computeIfAbsent(pkgName, k -> new ArrayList()).add(type);
+            }
+        }
+        for (Map.Entry<String, List<TypeElement>> entry : explicitlySpecifiedClasses.entrySet()) {
+            List<TypeElement> list = packageTypes.computeIfAbsent(entry.getKey(), k -> new ArrayList());
+            for (TypeElement type : entry.getValue()) {
+                if (!list.contains(type)) {
+                    list.add(type);
+                }
+            }
+        }
     }
 
     /**
      * Write the XML representation of the API to a file.
      *
-     * @param root  the RootDoc object passed by Javadoc
+     * @param environment  the DocletEnvironment passed by Javadoc
      * @return true if no problems encountered
      */
-    public static boolean writeXML(RootDoc root) {
-    	String tempFileName = outputFileName;
-    	if (outputDirectory != null) {
-	    tempFileName = outputDirectory;
-	    if (!tempFileName.endsWith(JDiff.DIR_SEP)) 
-		tempFileName += JDiff.DIR_SEP;
+    public static boolean writeXML(DocletEnvironment environment) {
+        String tempFileName = outputFileName;
+        if (outputDirectory != null) {
+            tempFileName = outputDirectory;
+            if (!tempFileName.endsWith(JDiff.DIR_SEP))
+                tempFileName += JDiff.DIR_SEP;
 	    tempFileName += outputFileName;
     	}
 
@@ -40,11 +111,11 @@ public class RootDocToXML {
             FileOutputStream fos = new FileOutputStream(tempFileName);
             outputFile = new PrintWriter(fos);
             System.out.println("JDiff: writing the API to file '" + tempFileName + "'...");
-            if (root.specifiedPackages().length != 0 || root.specifiedClasses().length != 0) {
-                RootDocToXML apiWriter = new RootDocToXML();
+            RootDocToXML apiWriter = new RootDocToXML(environment);
+            if (!apiWriter.packageTypes.isEmpty() || !apiWriter.explicitlySpecifiedClasses.isEmpty()) {
                 apiWriter.emitXMLHeader();
                 apiWriter.logOptions();
-                apiWriter.processPackages(root);
+                apiWriter.processPackages();
                 apiWriter.emitXMLFooter();
             }
             outputFile.close();
@@ -223,98 +294,110 @@ public class RootDocToXML {
      *
      * @param pd  an array of PackageDoc objects
      */
-    public void processPackages(RootDoc root) {
-        PackageDoc[] specified_pd = root.specifiedPackages();
-	Map pdl = new TreeMap();
-        for (int i = 0; specified_pd != null && i < specified_pd.length; i++) {
-	    pdl.put(specified_pd[i].name(), specified_pd[i]);
-	}
-
-	// Classes may be specified separately, so merge their packages into the
-	// list of specified packages.
-        ClassDoc[] cd = root.specifiedClasses();
-	// This is lists of the specific classes to document
-	Map classesToUse = new HashMap();
-        for (int i = 0; cd != null && i < cd.length; i++) {
-	    PackageDoc cpd = cd[i].containingPackage();
-	    if (cpd == null && !packagesOnly) {
-		// If the RootDoc object has been created from a jar file
-		// this duplicates classes, so we have to be able to disable it.
-		// TODO this is still null?
-		cpd = root.packageNamed("anonymous");
-	    }
-            String pkgName = cpd.name();
-            String className = cd[i].name();
-	    if (trace) System.out.println("Found package " + pkgName + " for class " + className);
-	    if (!pdl.containsKey(pkgName)) {
-		if (trace) System.out.println("Adding new package " + pkgName);
-		pdl.put(pkgName, cpd);
-	    }
-
-	    // Keep track of the specific classes to be used for this package
-	    List classes;
-	    if (classesToUse.containsKey(pkgName)) {
-		classes = (ArrayList) classesToUse.get(pkgName);
-	    } else {
-		classes = new ArrayList();
-	    }
-	    classes.add(cd[i]);
-	    classesToUse.put(pkgName, classes);
-	}
-
-	PackageDoc[] pd = (PackageDoc[]) pdl.values().toArray(new PackageDoc[0]);
-        for (int i = 0; pd != null && i < pd.length; i++) {
-            String pkgName = pd[i].name();
-            
-            // Check for an exclude tag in the package doc block, but not
-	    // in the package.htm[l] file.
-            if (!shownElement(pd[i], null))
+    public void processPackages() {
+        List<String> packageNames = new ArrayList(packageTypes.keySet());
+        for (String pkgName : packageElements.keySet()) {
+            if (!packageNames.contains(pkgName)) {
+                packageNames.add(pkgName);
+            }
+        }
+        Collections.sort(packageNames);
+        for (String pkgName : packageNames) {
+            PackageElement pkg = packageElements.get(pkgName);
+            if (pkg == null) {
                 continue;
-
+            }
+            String pkgComment = elementUtils.getDocComment(pkg);
+            if (!shouldIncludeElement(pkg, pkgComment, null)) {
+                continue;
+            }
             if (trace) System.out.println("PROCESSING PACKAGE: " + pkgName);
             outputFile.println("<package name=\"" + pkgName + "\">");
 
-            int tagCount = pd[i].tags().length;
-            if (trace) System.out.println("#tags: " + tagCount);
-            
-            List classList;
-	    if (classesToUse.containsKey(pkgName)) {
-		// Use only the specified classes in the package
-		System.out.println("Using the specified classes");
-		classList = (ArrayList) classesToUse.get(pkgName);
-	    } else {
-		// Use all classes in the package
-		classList = new LinkedList(Arrays.asList(pd[i].allClasses()));
-	    }
-            Collections.sort(classList);
-            ClassDoc[] classes = new ClassDoc[classList.size()];
-            classes = (ClassDoc[])classList.toArray(classes);
+            List<TypeElement> classes = collectClassesForPackage(pkgName);
+            Collections.sort(classes, new Comparator<TypeElement>() {
+                public int compare(TypeElement a, TypeElement b) {
+                    return a.getQualifiedName().toString().compareTo(b.getQualifiedName().toString());
+                }
+            });
             processClasses(classes, pkgName);
 
-            addPkgDocumentation(root, pd[i], 2);
+            addPkgDocumentation(pkg, pkgComment, 2);
 
             outputFile.println("</package>");
         }
     } // processPackages
+
+    private List<TypeElement> collectClassesForPackage(String pkgName) {
+        List<TypeElement> classes;
+        if (explicitlySpecifiedClasses.containsKey(pkgName) && !packagesOnly) {
+            classes = new ArrayList(explicitlySpecifiedClasses.get(pkgName));
+        } else {
+            classes = new ArrayList(packageTypes.getOrDefault(pkgName, Collections.emptyList()));
+        }
+        return classes;
+    }
+
+    private boolean isInterface(TypeElement type) {
+        switch (type.getKind()) {
+            case INTERFACE:
+            case ANNOTATION_TYPE:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private List<ExecutableElement> getConstructors(TypeElement type) {
+        List<ExecutableElement> constructors = new ArrayList();
+        for (Element e : type.getEnclosedElements()) {
+            if (e instanceof ExecutableElement && e.getKind() == javax.lang.model.element.ElementKind.CONSTRUCTOR) {
+                constructors.add((ExecutableElement) e);
+            }
+        }
+        return constructors;
+    }
+
+    private List<ExecutableElement> getMethods(TypeElement type) {
+        List<ExecutableElement> methods = new ArrayList();
+        for (Element e : type.getEnclosedElements()) {
+            if (e instanceof ExecutableElement && e.getKind() == javax.lang.model.element.ElementKind.METHOD) {
+                methods.add((ExecutableElement) e);
+            }
+        }
+        return methods;
+    }
+
+    private List<VariableElement> getFields(TypeElement type) {
+        List<VariableElement> fields = new ArrayList();
+        for (Element e : type.getEnclosedElements()) {
+            if (e instanceof VariableElement &&
+                (e.getKind() == javax.lang.model.element.ElementKind.FIELD ||
+                 e.getKind() == javax.lang.model.element.ElementKind.ENUM_CONSTANT)) {
+                fields.add((VariableElement) e);
+            }
+        }
+        return fields;
+    }
     
     /**
      * Process classes and interfaces.
      *
      * @param cd An array of ClassDoc objects.
      */
-    public void processClasses(ClassDoc[] cd, String pkgName) {
-        if (cd.length == 0)
+    public void processClasses(List<TypeElement> types, String pkgName) {
+        if (types.isEmpty()) {
             return;
-        if (trace) System.out.println("PROCESSING CLASSES, number=" + cd.length);
-        for (int i = 0; i < cd.length; i++) {
-            String className = cd[i].name();
+        }
+        if (trace) System.out.println("PROCESSING CLASSES, number=" + types.size());
+        for (TypeElement type : types) {
+            String className = type.getSimpleName().toString();
+            String docComment = elementUtils.getDocComment(type);
             if (trace) System.out.println("PROCESSING CLASS/IFC: " + className);
-            // Only save the shown elements
-            if (!shownElement(cd[i], classVisibilityLevel))
+            if (!shouldIncludeElement(type, docComment, classVisibilityLevel)) {
                 continue;
-            boolean isInterface = false;
-            if (cd[i].isInterface())
-                isInterface = true;
+            }
+            boolean isInterface = isInterface(type);
             if (isInterface) {
                 outputFile.println("  <!-- start interface " + pkgName + "." + className + " -->");
                 outputFile.print("  <interface name=\"" + className + "\"");
@@ -322,20 +405,20 @@ public class RootDocToXML {
                 outputFile.println("  <!-- start class " + pkgName + "." + className + " -->");
                 outputFile.print("  <class name=\"" + className + "\"");
             }
-            // Add attributes to the class element
-            Type parent = cd[i].superclassType();
-            if (parent != null)
-                outputFile.println(" extends=\"" + buildEmittableTypeString(parent) + "\"");
-            outputFile.println("    abstract=\"" + cd[i].isAbstract() + "\"");
-            addCommonModifiers(cd[i], 4);
+            TypeMirror superclass = type.getSuperclass();
+            if (superclass != null && superclass.getKind() != TypeKind.NONE) {
+                outputFile.println(" extends=\"" + buildEmittableTypeString(superclass) + "\"");
+            }
+            outputFile.println("    abstract=\"" + type.getModifiers().contains(Modifier.ABSTRACT) + "\"");
+            addCommonModifiers(type, docComment, 4);
             outputFile.println(">");
-            // Process class members. (Treat inner classes as members.)
-            processInterfaces(cd[i].interfaceTypes());
-            processConstructors(cd[i].constructors());
-            processMethods(cd[i], cd[i].methods());
-            processFields(cd[i].fields());
 
-            addDocumentation(cd[i], 4);
+            processInterfaces(type.getInterfaces());
+            processConstructors(type, getConstructors(type));
+            processMethods(type, getMethods(type));
+            processFields(getFields(type));
+
+            addDocumentation(type, docComment, 4);
 
             if (isInterface) {
                 outputFile.println("  </interface>");
@@ -344,110 +427,110 @@ public class RootDocToXML {
                 outputFile.println("  </class>");
                 outputFile.println("  <!-- end class " + pkgName + "." + className + " -->");
             }
-            // Inner classes have already been added.
-            /*
-              ClassDoc[] ic = cd[i].innerClasses();
-              for (int k = 0; k < ic.length; k++) {
-              System.out.println("Inner class " + k + ", name = " + ic[k].name());
-              } 
-            */
-        }//for
-    }//processClasses()
+        }
+    }
     
     /**
      * Add qualifiers for the program element as attributes.
      *
      * @param ped The given program element.
      */
-    public void addCommonModifiers(ProgramElementDoc ped, int indent) {
-        addSourcePosition(ped, indent);
-        // Static and final and visibility on one line
+    public void addCommonModifiers(Element element, String docComment, int indent) {
+        addSourcePosition(element, indent);
+        Set<Modifier> modifiers = element.getModifiers();
         for (int i = 0; i < indent; i++) outputFile.print(" ");
-        outputFile.print("static=\"" + ped.isStatic() + "\"");
-        outputFile.print(" final=\"" + ped.isFinal() + "\"");
-        // Visibility
-        String visibility = null;
-        if (ped.isPublic())
-            visibility = "public";
-        else if (ped.isProtected())
-            visibility = "protected";
-        else if (ped.isPackagePrivate())
-            visibility = "package";
-        else if (ped.isPrivate())
-            visibility = "private";
+        outputFile.print("static=\"" + modifiers.contains(Modifier.STATIC) + "\"");
+        outputFile.print(" final=\"" + modifiers.contains(Modifier.FINAL) + "\"");
+        String visibility = determineVisibility(modifiers);
         outputFile.println(" visibility=\"" + visibility + "\"");
 
-        // Deprecation on its own line
         for (int i = 0; i < indent; i++) outputFile.print(" ");
-        boolean isDeprecated = false;
-        Tag[] ta = ((Doc)ped).tags("deprecated");
-        if (ta.length != 0) {
-            isDeprecated = true;
-        }
-        if (ta.length > 1) {
-            System.out.println("JDiff: warning: multiple @deprecated tags found in comments for " + ped.name() + ". Using the first one only.");
-            System.out.println("Text is: " + ((Doc)ped).getRawCommentText());
-        }
-        if (isDeprecated) {
-            String text = ta[0].text(); // Use only one @deprecated tag
-            if (text != null && text.compareTo("") != 0) {
-                int idx = endOfFirstSentence(text);
-                if (idx == 0) {
-                    // No useful comment
-                    outputFile.print("deprecated=\"deprecated, no comment\"");
-                } else {
-                    String fs = null;
-                    if (idx == -1)
-                        fs = text;
-                    else
-                        fs = text.substring(0, idx+1);
-                    String st = API.hideHTMLTags(fs);
-                    outputFile.print("deprecated=\"" + st + "\"");
-                }
-            } else {
-                outputFile.print("deprecated=\"deprecated, no comment\"");
-            }
+        String deprecatedText = extractDeprecatedText(element, docComment);
+        if (deprecatedText != null) {
+            outputFile.print("deprecated=\"" + deprecatedText + "\"");
         } else {
             outputFile.print("deprecated=\"not deprecated\"");
         }
 
-    } //addQualifiers()
+    }
+
+    private String determineVisibility(Set<Modifier> modifiers) {
+        if (modifiers.contains(Modifier.PUBLIC)) {
+            return "public";
+        }
+        if (modifiers.contains(Modifier.PROTECTED)) {
+            return "protected";
+        }
+        if (modifiers.contains(Modifier.PRIVATE)) {
+            return "private";
+        }
+        return "package";
+    }
+
+    private String extractDeprecatedText(Element element, String docComment) {
+        boolean isDeprecated = element != null && element.getAnnotation(Deprecated.class) != null;
+        String text = null;
+        if (docComment != null) {
+            int index = docComment.indexOf("@deprecated");
+            if (index != -1) {
+                isDeprecated = true;
+                int start = index + "@deprecated".length();
+                int end = docComment.indexOf("@", start);
+                if (end == -1) {
+                    end = docComment.length();
+                }
+                text = docComment.substring(start, end).trim();
+            }
+        }
+        if (!isDeprecated) {
+            return null;
+        }
+        if (text == null || text.length() == 0) {
+            return "deprecated, no comment";
+        }
+        int idx = endOfFirstSentence(text);
+        if (idx == 0) {
+            return "deprecated, no comment";
+        }
+        String firstSentence;
+        if (idx == -1) {
+            firstSentence = text;
+        } else {
+            firstSentence = text.substring(0, idx + 1);
+        }
+        return API.hideHTMLTags(firstSentence);
+    }
 
     /**
      * Insert the source code details, if available.
      *
      * @param ped The given program element.
      */
-    public void addSourcePosition(ProgramElementDoc ped, int indent) {
+    public void addSourcePosition(Element element, int indent) {
         if (!addSrcInfo)
             return;
-        if (JDiff.javaVersion.startsWith("1.1") || 
-            JDiff.javaVersion.startsWith("1.2") || 
-            JDiff.javaVersion.startsWith("1.3")) {
-            return; // position() only appeared in J2SE1.4
+        if (element == null)
+            return;
+        TreePath path = docTrees.getPath(element);
+        if (path == null)
+            return;
+        CompilationUnitTree unit = path.getCompilationUnit();
+        if (unit == null || unit.getSourceFile() == null)
+            return;
+        long pos = docTrees.getSourcePositions().getStartPosition(unit, path.getLeaf());
+        if (pos < 0)
+            return;
+        long line = unit.getLineMap().getLineNumber(pos);
+        if (line < 0)
+            return;
+        String fileName = unit.getSourceFile().toUri().getPath();
+        if (fileName == null) {
+            fileName = unit.getSourceFile().getName();
         }
-        try {
-            // Could cache the method for improved performance
-            Class c = ProgramElementDoc.class;
-            Method m = c.getMethod("position", null);
-            Object sp = m.invoke(ped, null);
-            if (sp != null) {
-                for (int i = 0; i < indent; i++) outputFile.print(" ");
-                outputFile.println("src=\"" + sp + "\"");
-            }
-        } catch (NoSuchMethodException e2) {
-            System.err.println("Error: method \"position\" not found");
-            e2.printStackTrace();
-        } catch (IllegalAccessException e4) {
-            System.err.println("Error: class not permitted to be instantiated");
-            e4.printStackTrace();
-        } catch (InvocationTargetException e5) {
-            System.err.println("Error: method \"position\" could not be invoked");
-            e5.printStackTrace();
-        } catch (Exception e6) {
-            System.err.println("Error: ");
-            e6.printStackTrace();
-        }
+        if (fileName == null)
+            return;
+        for (int i = 0; i < indent; i++) outputFile.print(" ");
+        outputFile.println("src=\"" + fileName + ":" + line + "\"");
     }
 
     /**
@@ -455,154 +538,148 @@ public class RootDocToXML {
      *
      * @param ifaces An array of ClassDoc objects
      */
-    public void processInterfaces(Type[] ifaces) {
-        if (trace) System.out.println("PROCESSING INTERFACES, number=" + ifaces.length);
-        for (int i = 0; i < ifaces.length; i++) {
-            String ifaceName = buildEmittableTypeString(ifaces[i]);
+    public void processInterfaces(List<? extends TypeMirror> ifaces) {
+        if (trace) System.out.println("PROCESSING INTERFACES, number=" + ifaces.size());
+        for (TypeMirror iface : ifaces) {
+            String ifaceName = buildEmittableTypeString(iface);
             if (trace) System.out.println("PROCESSING INTERFACE: " + ifaceName);
             outputFile.println("    <implements name=\"" + ifaceName + "\"/>");
-        }//for
-    }//processInterfaces()
+        }
+    }
     
     /**
      * Process the constructors in the class.
      *
      * @param ct An array of ConstructorDoc objects
      */
-    public void processConstructors(ConstructorDoc[] ct) {
-        if (trace) System.out.println("PROCESSING CONSTRUCTORS, number=" + ct.length);
-        for (int i = 0; i < ct.length; i++) {
-            String ctorName = ct[i].name();
+    public void processConstructors(TypeElement owner, List<ExecutableElement> constructors) {
+        if (trace) System.out.println("PROCESSING CONSTRUCTORS, number=" + constructors.size());
+        for (ExecutableElement ctor : constructors) {
+            String ctorName = owner.getSimpleName().toString();
+            String docComment = elementUtils.getDocComment(ctor);
             if (trace) System.out.println("PROCESSING CONSTRUCTOR: " + ctorName);
-            // Only save the shown elements
-            if (!shownElement(ct[i], memberVisibilityLevel))
+            if (!shouldIncludeElement(ctor, docComment, memberVisibilityLevel)) {
                 continue;
+            }
             outputFile.print("    <constructor name=\"" + ctorName + "\"");
 
-            Parameter[] params = ct[i].parameters();
-            boolean first = true;
-            if (params.length != 0) {
+            List<? extends VariableElement> params = ctor.getParameters();
+            if (!params.isEmpty()) {
                 outputFile.print(" type=\"");
-                for (int j = 0; j < params.length; j++) {
-                    if (!first)
+                boolean first = true;
+                for (VariableElement param : params) {
+                    if (!first) {
                         outputFile.print(", ");
-                    emitType(params[j].type());
+                    }
+                    emitType(param.asType());
                     first = false;
                 }
                 outputFile.println("\"");
-            } else
+            } else {
                 outputFile.println();
-            addCommonModifiers(ct[i], 6);
+            }
+            addCommonModifiers(ctor, docComment, 6);
             outputFile.println(">");
-            
-            // Generate the exception elements if any exceptions are thrown
-            processExceptions(ct[i].thrownExceptions());
 
-            addDocumentation(ct[i], 6);
+            processExceptions(ctor.getThrownTypes());
+
+            addDocumentation(ctor, docComment, 6);
 
             outputFile.println("    </constructor>");
-        }//for
-    }//processConstructors()
+        }
+    }
     
     /**
      * Process all exceptions thrown by a constructor or method.
      *
      * @param cd An array of ClassDoc objects
      */
-    public void processExceptions(ClassDoc[] cd) {
-        if (trace) System.out.println("PROCESSING EXCEPTIONS, number=" + cd.length);
-        for (int i = 0; i < cd.length; i++) {
-            String exceptionName = cd[i].name();
-            if (trace) System.out.println("PROCESSING EXCEPTION: " + exceptionName);
-            outputFile.print("      <exception name=\"" + exceptionName + "\" type=\"");
-            emitType(cd[i]);
+    public void processExceptions(List<? extends TypeMirror> thrownTypes) {
+        if (trace) System.out.println("PROCESSING EXCEPTIONS, number=" + thrownTypes.size());
+        for (TypeMirror thrown : thrownTypes) {
+            String typeName = buildEmittableTypeString(thrown);
+            String simpleName = extractSimpleName(typeName);
+            if (trace) System.out.println("PROCESSING EXCEPTION: " + typeName);
+            outputFile.print("      <exception name=\"" + simpleName + "\" type=\"");
+            outputFile.print(typeName);
             outputFile.println("\"/>");
-        }//for
-    }//processExceptions()
+        }
+    }
     
     /**
      * Process the methods in the class.
      *
      * @param md An array of MethodDoc objects
      */
-    public void processMethods(ClassDoc cd, MethodDoc[] md) {
-        if (trace) System.out.println("PROCESSING " +cd.name()+" METHODS, number = " + md.length);
-        for (int i = 0; i < md.length; i++) {
-            String methodName = md[i].name();
+    public void processMethods(TypeElement owner, List<ExecutableElement> methods) {
+        if (trace) System.out.println("PROCESSING " + owner.getSimpleName() + " METHODS, number = " + methods.size());
+        for (ExecutableElement method : methods) {
+            String methodName = method.getSimpleName().toString();
             if (trace) System.out.println("PROCESSING METHOD: " + methodName);
-            // Skip <init> and <clinit>
-            if (methodName.startsWith("<"))
+            String docComment = elementUtils.getDocComment(method);
+            if (!shouldIncludeElement(method, docComment, memberVisibilityLevel)) {
                 continue;
-            // Only save the shown elements
-            if (!shownElement(md[i], memberVisibilityLevel))
-                continue;
+            }
             outputFile.print("    <method name=\"" + methodName + "\"");
-            com.sun.javadoc.Type retType = md[i].returnType();
-            if (retType.qualifiedTypeName().compareTo("void") == 0) {
-                // Don't add a return attribute if the return type is void
-                outputFile.println();
-            } else {
+            TypeMirror retType = method.getReturnType();
+            if (retType.getKind() != TypeKind.VOID) {
                 outputFile.print(" return=\"");
                 emitType(retType);
                 outputFile.println("\"");
+            } else {
+                outputFile.println();
             }
-            outputFile.print("      abstract=\"" + md[i].isAbstract() + "\"");
-            outputFile.print(" native=\"" + md[i].isNative() + "\"");
-            outputFile.println(" synchronized=\"" + md[i].isSynchronized() + "\"");
-            addCommonModifiers(md[i], 6);
+            outputFile.print("      abstract=\"" + method.getModifiers().contains(Modifier.ABSTRACT) + "\"");
+            outputFile.print(" native=\"" + method.getModifiers().contains(Modifier.NATIVE) + "\"");
+            outputFile.println(" synchronized=\"" + method.getModifiers().contains(Modifier.SYNCHRONIZED) + "\"");
+            addCommonModifiers(method, docComment, 6);
             outputFile.println(">");
-            // Generate the parameter elements, if any
-            Parameter[] params = md[i].parameters();
-            for (int j = 0; j < params.length; j++) {
-                outputFile.print("      <param name=\"" + params[j].name() + "\"");
+
+            List<? extends VariableElement> params = method.getParameters();
+            for (VariableElement param : params) {
+                outputFile.print("      <param name=\"" + param.getSimpleName().toString() + "\"");
                 outputFile.print(" type=\"");
-                emitType(params[j].type());
+                emitType(param.asType());
                 outputFile.println("\"/>");
             }
 
-            // Generate the exception elements if any exceptions are thrown
-            processExceptions(md[i].thrownExceptions());
+            processExceptions(method.getThrownTypes());
 
-            addDocumentation(md[i], 6);
+            addDocumentation(method, docComment, 6);
 
             outputFile.println("    </method>");
-        }//for
-    }//processMethods()
+        }
+    }
 
     /**
      * Process the fields in the class.
      *
      * @param fd An array of FieldDoc objects
      */
-    public void processFields(FieldDoc[] fd) {
-        if (trace) System.out.println("PROCESSING FIELDS, number=" + fd.length);
-        for (int i = 0; i < fd.length; i++) {
-            String fieldName = fd[i].name();
+    public void processFields(List<VariableElement> fields) {
+        if (trace) System.out.println("PROCESSING FIELDS, number=" + fields.size());
+        for (VariableElement field : fields) {
+            String fieldName = field.getSimpleName().toString();
+            String docComment = elementUtils.getDocComment(field);
             if (trace) System.out.println("PROCESSING FIELD: " + fieldName);
-            // Only save the shown elements
-            if (!shownElement(fd[i], memberVisibilityLevel))
+            if (!shouldIncludeElement(field, docComment, memberVisibilityLevel)) {
                 continue;
+            }
             outputFile.print("    <field name=\"" + fieldName + "\"");
             outputFile.print(" type=\"");
-            emitType(fd[i].type());
+            emitType(field.asType());
             outputFile.println("\"");
-            outputFile.print("      transient=\"" + fd[i].isTransient() + "\"");
-            outputFile.println(" volatile=\"" + fd[i].isVolatile() + "\"");
-/* JDK 1.4 and later */
-/*
-            String value = fd[i].constantValueExpression();
-            if (value != null)
-                outputFile.println(" value=\"" + value + "\"");
-*/
-            addCommonModifiers(fd[i], 6);
+            outputFile.print("      transient=\"" + field.getModifiers().contains(Modifier.TRANSIENT) + "\"");
+            outputFile.println(" volatile=\"" + field.getModifiers().contains(Modifier.VOLATILE) + "\"");
+            addCommonModifiers(field, docComment, 6);
             outputFile.println(">");
 
-            addDocumentation(fd[i], 6);
+            addDocumentation(field, docComment, 6);
 
             outputFile.println("    </field>");
 
-        }//for
-    }//processFields()
+        }
+    }
     
     /**
      * Emit the type name. Removed any prefixed warnings about ambiguity.
@@ -610,7 +687,7 @@ public class RootDocToXML {
      *
      * @param type A Type object.
      */
-    public void emitType(com.sun.javadoc.Type type) {
+    public void emitType(TypeMirror type) {
         String name = buildEmittableTypeString(type);
         if (name == null)
             return;
@@ -624,23 +701,31 @@ public class RootDocToXML {
      * @param type A Type object
      * @return The emittable type name
      */
-    private String buildEmittableTypeString(com.sun.javadoc.Type type) {
+    private String buildEmittableTypeString(TypeMirror type) {
         if (type == null) {
-    	    return null;
+            return null;
         }
-      // type.toString() returns the fully qualified name of the type
-      // including the dimension and the parameters we just need to
-      // escape the generic parameters brackets so that the XML
-      // generated is correct
-      String name = type.toString().
-                         replaceAll("&", "&amp;").
-                         replaceAll("<", "&lt;").
-                         replaceAll(">", "&gt;");
-      if (name.startsWith("<<ambiguous>>")) {
-          name = name.substring(13);
-      }
-      return name;
-    }    
+        String name = type.toString()
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;");
+        return name;
+    }
+
+    private String extractSimpleName(String typeName) {
+        if (typeName == null) {
+            return null;
+        }
+        int genericIndex = typeName.indexOf("&lt;");
+        if (genericIndex != -1) {
+            typeName = typeName.substring(0, genericIndex);
+        }
+        int lastDot = typeName.lastIndexOf('.');
+        if (lastDot != -1) {
+            typeName = typeName.substring(lastDot + 1);
+        }
+        return typeName;
+    }
 
     /**
      * Emit the XML header.
@@ -683,43 +768,36 @@ public class RootDocToXML {
      *   "package" or "private". If null, only check for an exclude tag.
      * @return boolean Set if this element is shown.
      */
-    public boolean shownElement(Doc doc, String visLevel) {
-        // If a doc block contains @exclude or a similar such tag, 
-        // then don't display it.
-	if (doExclude && excludeTag != null && doc != null) {
-            String rct = doc.getRawCommentText();
-            if (rct != null && rct.indexOf(excludeTag) != -1) {
+    public boolean shouldIncludeElement(Element element, String docComment, String visLevel) {
+        if (doExclude && excludeTag != null) {
+            if (docComment != null && docComment.indexOf(excludeTag) != -1) {
                 return false;
-	    }
-	}  
-	if (visLevel == null) {
-	    return true;
-	}
-	ProgramElementDoc ped = null;
-	if (doc instanceof ProgramElementDoc) {
-	    ped = (ProgramElementDoc)doc;
-	}
+            }
+        }
+        if (visLevel == null) {
+            return true;
+        }
+        if (element == null) {
+            return true;
+        }
+        Set<Modifier> modifiers = element.getModifiers();
         if (visLevel.compareTo("private") == 0)
             return true;
-        // Show all that is not private 
         if (visLevel.compareTo("package") == 0)
-            return !ped.isPrivate();
-        // Show all that is not private or package
+            return !modifiers.contains(Modifier.PRIVATE);
         if (visLevel.compareTo("protected") == 0)
-            return !(ped.isPrivate() || ped.isPackagePrivate());
-        // Show all that is not private or package or protected,
-        // i.e. all that is public
+            return modifiers.contains(Modifier.PUBLIC) || modifiers.contains(Modifier.PROTECTED);
         if (visLevel.compareTo("public") == 0)
-            return ped.isPublic();
+            return modifiers.contains(Modifier.PUBLIC);
         return false;
-    } //shownElement()
+    }
     
     /** 
      * Strip out non-printing characters, replacing them with a character 
      * which will not change where the end of the first sentence is found.
      * This character is the hash mark, '&#035;'.
      */
-    public String stripNonPrintingChars(String s, Doc doc) {
+    public String stripNonPrintingChars(String s, String elementName) {
         if (!stripNonPrintables)
             return s;
         char[] sa = s.toCharArray();
@@ -780,8 +858,8 @@ public class RootDocToXML {
                 inRange(val, 0x206A, 0x206F) || 
                 inRange(val, 0xFFF9, 0xFFFC) || 
                 inRange(val, 0xE0000, 0xE007F)) {
-                if (trace) {
-                    System.out.println("Warning: changed non-printing character  " + sa[i] + " in " + doc.name()); 
+                if (trace && elementName != null) {
+                    System.out.println("Warning: changed non-printing character  " + sa[i] + " in " + elementName);
                 }
                 sa[i] = '#';
             }
@@ -791,6 +869,20 @@ public class RootDocToXML {
             sa[i] = '#';
         }
         return new String(sa);
+    }
+
+    private String elementName(Element element) {
+        if (element == null) {
+            return null;
+        }
+        if (element instanceof PackageElement) {
+            return ((PackageElement) element).getQualifiedName().toString();
+        }
+        String name = element.getSimpleName().toString();
+        if (name == null || name.length() == 0) {
+            return element.toString();
+        }
+        return name;
     }
 
     /** Return true if val is in the range [min|max], inclusive. */
@@ -812,36 +904,37 @@ public class RootDocToXML {
      * end element tag. Due to the difficulties of converting incorrect HTML
      * to XHTML, the first option is used.
      */
-    public void addDocumentation(ProgramElementDoc ped, int indent) {
-        String rct = ((Doc)ped).getRawCommentText();
-        if (rct != null) {
-            rct = stripNonPrintingChars(rct, (Doc)ped);
-            rct = rct.trim();
-            if (rct.compareTo("") != 0 && 
-                rct.indexOf(Comments.placeHolderText) == -1 &&
-                rct.indexOf("InsertOtherCommentsHere") == -1) {
-                int idx = endOfFirstSentence(rct);
-                if (idx == 0)
-                    return;
-                for (int i = 0; i < indent; i++) outputFile.print(" ");
-                outputFile.println("<doc>");
-                for (int i = 0; i < indent; i++) outputFile.print(" ");
-                String firstSentence = null;
-                if (idx == -1)
-                    firstSentence = rct;
-                else
-                    firstSentence = rct.substring(0, idx+1);
-                boolean checkForAts = false;
-                if (checkForAts && firstSentence.indexOf("@") != -1 && 
-                    firstSentence.indexOf("@link") == -1) {
-                    System.out.println("Warning: @ tag seen in comment: " + 
-                                       firstSentence);
-                }
-                String firstSentenceNoTags = API.stuffHTMLTags(firstSentence);
-                outputFile.println(firstSentenceNoTags);
-                for (int i = 0; i < indent; i++) outputFile.print(" ");
-                outputFile.println("</doc>");
+    public void addDocumentation(Element element, String docComment, int indent) {
+        if (docComment == null) {
+            return;
+        }
+        String elementName = elementName(element);
+        String rct = stripNonPrintingChars(docComment, elementName);
+        rct = rct.trim();
+        if (rct.compareTo("") != 0 &&
+            rct.indexOf(Comments.placeHolderText) == -1 &&
+            rct.indexOf("InsertOtherCommentsHere") == -1) {
+            int idx = endOfFirstSentence(rct);
+            if (idx == 0)
+                return;
+            for (int i = 0; i < indent; i++) outputFile.print(" ");
+            outputFile.println("<doc>");
+            for (int i = 0; i < indent; i++) outputFile.print(" ");
+            String firstSentence = null;
+            if (idx == -1)
+                firstSentence = rct;
+            else
+                firstSentence = rct.substring(0, idx+1);
+            boolean checkForAts = false;
+            if (checkForAts && firstSentence.indexOf("@") != -1 &&
+                firstSentence.indexOf("@link") == -1) {
+                System.out.println("Warning: @ tag seen in comment: " +
+                                   firstSentence);
             }
+            String firstSentenceNoTags = API.stuffHTMLTags(firstSentence);
+            outputFile.println(firstSentenceNoTags);
+            for (int i = 0; i < indent; i++) outputFile.print(" ");
+            outputFile.println("</doc>");
         }
     }
 
@@ -857,74 +950,14 @@ public class RootDocToXML {
      * end element tag.  Due to the difficulties of converting incorrect HTML
      * to XHTML, the first option is used.
      */
-    public void addPkgDocumentation(RootDoc root, PackageDoc pd, int indent) {
-        String rct = null;
-        String filename = pd.name();
-        try {
-            // See if the source path was specified as part of the
-            // options and prepend it if it was.
-            String srcLocation = null;
-            String[][] options = root.options();
-            for (int opt = 0; opt < options.length; opt++) {
-                if ((options[opt][0]).compareTo("-sourcepath") == 0) {
-                    srcLocation = options[opt][1];
-                    break;
-                }
-            }
-            filename = filename.replace('.', JDiff.DIR_SEP.charAt(0));
-            if (srcLocation != null) {
-                // Make a relative location absolute 
-                if (srcLocation.startsWith("..")) {
-                    String curDir = System.getProperty("user.dir");
-                    while (srcLocation.startsWith("..")) {
-                        srcLocation = srcLocation.substring(3);
-                        int idx = curDir.lastIndexOf(JDiff.DIR_SEP);
-                        curDir = curDir.substring(0, idx+1);
-                    }
-                    srcLocation = curDir + srcLocation;
-                }
-                filename = srcLocation + JDiff.DIR_SEP + filename;
-            }
-            // Try both ".htm" and ".html"
-            filename += JDiff.DIR_SEP + "package.htm";
-            File f2 = new File(filename);
-            if (!f2.exists()) {
-                filename += "l";
-            }
-            FileInputStream f = new FileInputStream(filename);
-            BufferedReader d = new BufferedReader(new InputStreamReader(f));
-            String str = d.readLine();
- 	    // Ignore everything except the lines between <body> elements
-	    boolean inBody = false;
-	    while(str != null) {
-                if (!inBody) {
-		    if (str.toLowerCase().trim().startsWith("<body")) {
-			inBody = true;
-		    }
-		    str = d.readLine(); // Get the next line
-		    continue; // Ignore the line
-		} else {
-		    if (str.toLowerCase().trim().startsWith("</body")) {
-			inBody = false;
-			continue; // Ignore the line
-		    }
-		}
-                if (rct == null)
-                    rct = str + "\n";
-                else
-                    rct += str + "\n";
-                str = d.readLine();
-            }
-        }  catch(java.io.FileNotFoundException e) {
-            // If it doesn't exist, that's fine
-            if (trace)
-                System.out.println("No package level documentation file at '" + filename + "'");
-        } catch(java.io.IOException e) {
-            System.out.println("Error reading file \"" + filename + "\": " + e.getMessage());
-            System.exit(5);
-        }     
+    public void addPkgDocumentation(PackageElement pkg, String docComment, int indent) {
+        String rct = docComment;
+        if (rct == null) {
+            rct = readPackageDocumentationFromHtml(pkg);
+        }
         if (rct != null) {
-            rct = stripNonPrintingChars(rct, (Doc)pd);
+            String pkgName = pkg.getQualifiedName().toString();
+            rct = stripNonPrintingChars(rct, pkgName);
             rct = rct.trim();
             if (rct.compareTo("") != 0 &&
                 rct.indexOf(Comments.placeHolderText) == -1 &&
@@ -946,6 +979,87 @@ public class RootDocToXML {
                 outputFile.println("</doc>");
             }
         }
+    }
+
+    private String readPackageDocumentationFromHtml(PackageElement pkg) {
+        if (pkg == null) {
+            return null;
+        }
+        String pkgName = pkg.getQualifiedName().toString();
+        String filename = pkgName.replace('.', JDiff.DIR_SEP.charAt(0));
+        String srcLocation = sourcePath;
+        if (srcLocation != null) {
+            srcLocation = resolveSourcePath(srcLocation);
+            filename = srcLocation + JDiff.DIR_SEP + filename;
+        }
+        String attempted = filename + JDiff.DIR_SEP + "package.htm";
+        BufferedReader reader = null;
+        try {
+            File file = new File(attempted);
+            if (!file.exists()) {
+                file = new File(attempted + "l");
+                attempted = file.getPath();
+            } else {
+                attempted = file.getPath();
+            }
+            reader = new BufferedReader(new InputStreamReader(new FileInputStream(file)));
+            StringBuilder rct = new StringBuilder();
+            String str = reader.readLine();
+            boolean inBody = false;
+            while (str != null) {
+                if (!inBody) {
+                    if (str.toLowerCase().trim().startsWith("<body")) {
+                        inBody = true;
+                    }
+                    str = reader.readLine();
+                    continue;
+                } else {
+                    if (str.toLowerCase().trim().startsWith("</body")) {
+                        inBody = false;
+                        str = reader.readLine();
+                        continue;
+                    }
+                }
+                rct.append(str).append("\n");
+                str = reader.readLine();
+            }
+            if (rct.length() == 0) {
+                return null;
+            }
+            return rct.toString();
+        } catch (FileNotFoundException e) {
+            if (trace)
+                System.out.println("No package level documentation file at '" + attempted + "'");
+            return null;
+        } catch (IOException e) {
+            System.out.println("Error reading file \"" + attempted + "\": " + e.getMessage());
+            System.exit(5);
+            return null;
+        } finally {
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (IOException ignore) {
+                }
+            }
+        }
+    }
+
+    private String resolveSourcePath(String srcLocation) {
+        if (srcLocation.startsWith("..")) {
+            String curDir = System.getProperty("user.dir");
+            String location = srcLocation;
+            while (location.startsWith("..")) {
+                location = location.substring(3);
+                int idx = curDir.lastIndexOf(JDiff.DIR_SEP);
+                if (idx == -1) {
+                    break;
+                }
+                curDir = curDir.substring(0, idx + 1);
+            }
+            return curDir + location;
+        }
+        return srcLocation;
     }
 
     /** 
@@ -1136,13 +1250,16 @@ public class RootDocToXML {
      */
     static boolean addSrcInfo = false;
 
-    /** 
-     * If set, scan classes with no packages. 
-     * If the source is  a jar file this may duplicates classes, so 
-     * disable it using the -packagesonly option. Default is that this is 
+    /**
+     * If set, scan classes with no packages.
+     * If the source is  a jar file this may duplicates classes, so
+     * disable it using the -packagesonly option. Default is that this is
      * not set.
      */
     static boolean packagesOnly = false;
+
+    /** Location of source files when provided via -sourcepath. */
+    static String sourcePath = null;
 
     /** Set to enable increased logging verbosity for debugging. */
     private static boolean trace = false;
