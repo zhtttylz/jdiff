@@ -1,7 +1,6 @@
 package jdiff;
 
 import java.util.*;
-import com.sun.javadoc.*;
 
 /**
  * The changes between two class constructor, method or field members.

@@ -2,9 +2,11 @@ package jdiff;
 
 import java.io.*;
 import java.util.*;
-import com.sun.javadoc.*;
+import javax.tools.Diagnostic;
+import jdk.javadoc.doclet.Doclet;
+import jdk.javadoc.doclet.Reporter;
 
-/** 
+/**
  * Class to handle options for JDiff.
  *
  * See the file LICENSE.txt for copyright details.
@@ -12,387 +14,258 @@ import com.sun.javadoc.*;
  */
 public class Options {
 
-    /** Default constructor. */
-    public Options() {
+    private static final boolean trace = false;
+    private static final Map<String, SimpleOption> OPTIONS = new LinkedHashMap<>();
+
+    private static Reporter reporter;
+    private static boolean exitAfterOptions;
+
+    static {
+        registerOption("-apiname", 1, "<name>", "Generate an XML file describing the named API.");
+        registerOption("-apidir", 1, "<directory>", "Directory where the generated XML file will be written.");
+        registerOption("-oldapi", 1, "<name>", "Name of the XML file describing the old API.");
+        registerOption("-oldapidir", 1, "<directory>", "Directory containing the XML for the old API.");
+        registerOption("-newapi", 1, "<name>", "Name of the XML file describing the new API.");
+        registerOption("-newapidir", 1, "<directory>", "Directory containing the XML for the new API.");
+        registerOption("-d", 1, "<directory>", "Destination directory for generated HTML reports.");
+        registerOption("-javadocnew", 1, "<location>", "Location of existing Javadoc for the new API.");
+        registerOption("-javadocold", 1, "<location>", "Location of existing Javadoc for the old API.");
+        registerOption("-baseuri", 1, "<base>", "Base URI for locating supporting DTDs and schemas.");
+        registerOption("-excludeclass", 1, "<level>", "Exclude classes below the given visibility level.");
+        registerOption("-excludemember", 1, "<level>", "Exclude members below the given visibility level.");
+        registerOption("-firstsentence", 0, "", "Store only the first sentence of documentation comments.");
+        registerOption("-docchanges", 0, "", "Report changes in documentation comments.");
+        registerOption("-incompatible", 0, "", "Report only incompatible changes.");
+        registerOption("-packagesonly", 0, "", "Limit scanning to explicitly named packages.");
+        registerOption("-showallchanges", 0, "", "Display all recorded changes, even compatible ones.");
+        registerOption("-nosuggest", 1, "<level>", "Disable suggested comments (all|remove|add|change).");
+        registerOption("-checkcomments", 0, "", "Check that documentation comments end with a period.");
+        registerOption("-retainnonprinting", 0, "", "Retain non-printing characters in comments.");
+        registerOption("-excludetag", 1, "<tag>", "Exclude elements containing the specified Javadoc tag.");
+        registerOption("-stats", 0, "", "Generate statistical summary output.");
+        registerOption("-doctitle", 1, "<html>", "Custom HTML for the report title page.");
+        registerOption("-windowtitle", 1, "<text>", "Browser window title for the report.");
+        registerOption("-version", 0, "", "Display the JDiff version.");
+        registerOption("-help", 0, "", "Display usage information.");
     }
 
-    /**
-     * Returns the "length" of a given option. If an option takes no
-     * arguments, its length is one. If it takes one argument, its
-     * length is two, and so on. This method is called by Javadoc to
-     * parse the options it does not recognize. It then calls
-     * {@link #validOptions} to validate them.
-     * <blockquote>
-     * <b>Note:</b><br>
-     * The options arrive as case-sensitive strings. For options that
-     * are not case-sensitive, use toLowerCase() on the option string
-     * before comparing it.
-     * </blockquote>
-     *
-     * @param option  a String containing an option
-     * @return an int telling how many components that option has
-     */
-    public static int optionLength(String option) {
-        String opt = option.toLowerCase();
-        
-        // Standard options
-        if (opt.equals("-authorid"))  return 2;
-        if (opt.equals("-versionid")) return 2;
-        if (opt.equals("-d"))         return 2;
-        if (opt.equals("-classlist")) return 1;
-        if (opt.equals("-title"))     return 2;
-        if (opt.equals("-docletid"))  return 1;
-        if (opt.equals("-evident"))   return 2;
-        if (opt.equals("-skippkg"))   return 2;
-        if (opt.equals("-skipclass")) return 2;
-        if (opt.equals("-execdepth")) return 2;
-        if (opt.equals("-help"))      return 1;
-        if (opt.equals("-version"))      return 1;
-        if (opt.equals("-package"))   return 1;
-        if (opt.equals("-protected")) return 1;
-        if (opt.equals("-public"))    return 1;
-        if (opt.equals("-private"))   return 1;
-        if (opt.equals("-sourcepath")) return 2;
-        
-        // Options to control JDiff
-        if (opt.equals("-apiname"))    return 2;
-        if (opt.equals("-oldapi"))    return 2;
-        if (opt.equals("-newapi"))    return 2;
+    /** Default constructor. */
+    public Options() { }
 
-        // Options to control the location of the XML files
-        if (opt.equals("-apidir"))       return 2;
-        if (opt.equals("-oldapidir"))    return 2;
-        if (opt.equals("-newapidir"))    return 2;
+    public static void reset(Reporter newReporter) {
+        reporter = newReporter;
+        cmdOptions = "";
+        exitAfterOptions = false;
+    }
 
-        // Options for the exclusion level for classes and members
-        if (opt.equals("-excludeclass"))    return 2;
-        if (opt.equals("-excludemember"))    return 2;
+    public static Set<Doclet.Option> getSupportedOptions() {
+        return new LinkedHashSet<>(OPTIONS.values());
+    }
 
-        if (opt.equals("-firstsentence"))    return 1;
-        if (opt.equals("-docchanges"))    return 1;
-        if (opt.equals("-incompatible"))    return 1;
-        if (opt.equals("-packagesonly"))    return 1;
-        if (opt.equals("-showallchanges"))    return 1;
+    static boolean shouldExit() {
+        return exitAfterOptions;
+    }
 
-        // Option to change the location for the existing Javadoc
-        // documentation for the new API. Default is "../"
-        if (opt.equals("-javadocnew"))    return 2;
-        // Option to change the location for the existing Javadoc
-        // documentation for the old API. Default is null.
-        if (opt.equals("-javadocold"))    return 2;
-
-        if (opt.equals("-baseuri"))    return 2;
-
-        // Option not to suggest comments at all
-        if (opt.equals("-nosuggest"))    return 2;
-
-        // Option to enable checking that the comments end with a period.
-        if (opt.equals("-checkcomments"))    return 1;
-        // Option to retain non-printing characters in comments.
-        if (opt.equals("-retainnonprinting"))    return 1;
-        // Option for the name of the exclude tag
-        if (opt.equals("-excludetag"))    return 2;
-        // Generate statistical output
-        if (opt.equals("-stats"))    return 1;
-
-        // Set the browser window title
-        if (opt.equals("-windowtitle"))    return 2;
-        // Set the report title
-        if (opt.equals("-doctitle"))    return 2;
-
-        return 0;
-    }//optionLength()
-
-   /**
-    * After parsing the available options using {@link #optionLength},
-    * Javadoc invokes this method with an array of options-arrays, where
-    * the first item in any array is the option, and subsequent items in
-    * that array are its arguments. So, if -print is an option that takes
-    * no arguments, and -copies is an option that takes 1 argument, then
-    * <pre>
-    *     -print -copies 3
-    * </pre>
-    * produces an array of arrays that looks like:
-    * <pre>
-    *      option[0][0] = -print
-    *      option[1][0] = -copies
-    *      option[1][1] = 3
-    * </pre>
-    * (By convention, command line switches start with a "-", but
-    * they don't have to.)
-    * <p>
-    * <b>Note:</b><br>
-    * Javadoc passes <i>all</i>parameters to this method, not just
-    * those that Javadoc doesn't recognize. The only way to
-    * identify unexpected arguments is therefore to check for every
-    * Javadoc parameter as well as doclet parameters.
-    *
-    * @param options   an array of String arrays, one per option
-    * @param reporter  a DocErrorReporter for generating error messages
-    * @return true if no errors were found, and all options are
-    *         valid
-    */
-    public static boolean validOptions(String[][] options,
-                                       DocErrorReporter reporter) {
-        final DocErrorReporter errOut = reporter;
-        
-        // A nice object-oriented way of handling errors. An instance of this
-        // class puts out an error message and keeps track of whether or not
-        // an error was found.
-        class ErrorHandler {
-            boolean noErrorsFound = true;
-            void msg(String msg) {
-                noErrorsFound = false;
-                errOut.printError(msg);
-            }
+    static boolean processOption(String option, List<String> arguments) {
+        appendOption(option, arguments);
+        String opt = option.toLowerCase(Locale.ROOT);
+        if (trace) {
+            System.out.println("Processing option: " + opt + " " + arguments);
         }
-        
-        ErrorHandler err = new ErrorHandler();
-        if (trace)
-            System.out.println("Command line arguments: "); 
-        for (int i = 0; i < options.length; i++) {
-            for (int j = 0; j < options[i].length; j++) {
-                Options.cmdOptions += " " + options[i][j];
-                if (trace)
-                    System.out.print(" " + options[i][j]); 
-            }            
-        }
-        if (trace)
-            System.out.println(); 
-
-        for (int i = 0; i < options.length; i++) {
-            if (options[i][0].toLowerCase().equals("-apiname")) {
-                if (options[i].length < 2) {
-                    err.msg("No version identifier specified after -apiname option.");
-                } else if (JDiff.compareAPIs) {
-                    err.msg("Use the -apiname option, or the -oldapi and -newapi options, but not both.");
-                } else { 
-                    String filename = options[i][1];
-                    RootDocToXML.apiIdentifier = filename;
-                    filename = filename.replace(' ', '_');
-                    RootDocToXML.outputFileName =  filename + ".xml";
-                    JDiff.writeXML = true;
-                    JDiff.compareAPIs = false;
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-apidir")) {
-                if (options[i].length < 2) {
-                    err.msg("No directory specified after -apidir option.");
-                } else {
-		    RootDocToXML.outputDirectory = options[i][1];
-                }
-                continue;
-            }
-	    if (options[i][0].toLowerCase().equals("-oldapi")) {
-                if (options[i].length < 2) {
-                    err.msg("No version identifier specified after -oldapi option.");
-                } else if (JDiff.writeXML) {
-                    err.msg("Use the -apiname or -oldapi option, but not both.");
-                } else { 
-                    String filename = options[i][1];
-                    filename = filename.replace(' ', '_');
-                    JDiff.oldFileName =  filename + ".xml";
-                    JDiff.writeXML = false;
-                    JDiff.compareAPIs = true;
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-oldapidir")) {
-                if (options[i].length < 2) {
-                    err.msg("No directory specified after -oldapidir option.");
-                } else { 
-                	JDiff.oldDirectory = options[i][1];
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-newapi")) {
-                if (options[i].length < 2) {
-                    err.msg("No version identifier specified after -newapi option.");
-                } else if (JDiff.writeXML) {
-                    err.msg("Use the -apiname or -newapi option, but not both.");
-                } else { 
-                    String filename = options[i][1];
-                    filename = filename.replace(' ', '_');
-                    JDiff.newFileName =  filename + ".xml";
-                    JDiff.writeXML = false;
-                    JDiff.compareAPIs = true;
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-newapidir")) {
-                if (options[i].length < 2) {
-                    err.msg("No directory specified after -newapidir option.");
-                } else { 
-                	JDiff.newDirectory = options[i][1];
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-d")) {
-                if (options[i].length < 2) {
-                    err.msg("No directory specified after -d option.");
-                } else {
-                    HTMLReportGenerator.outputDir = options[i][1];
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-javadocnew")) {
-                if (options[i].length < 2) {
-                    err.msg("No location specified after -javadocnew option.");
-                } else {
-                    HTMLReportGenerator.newDocPrefix = options[i][1];
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-javadocold")) {
-                if (options[i].length < 2) {
-                    err.msg("No location specified after -javadocold option.");
-                } else {
-                    HTMLReportGenerator.oldDocPrefix = options[i][1];
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-baseuri")) {
-                if (options[i].length < 2) {
-                    err.msg("No base location specified after -baseURI option.");
-                } else {
-                    RootDocToXML.baseURI = options[i][1];
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-excludeclass")) {
-                if (options[i].length < 2) {
-                    err.msg("No level (public|protected|package|private) specified after -excludeclass option.");
-                } else { 
-                    String level = options[i][1];
-                    if (level.compareTo("public") != 0 &&
-                        level.compareTo("protected") != 0 &&
-                        level.compareTo("package") != 0 &&
-                        level.compareTo("private") != 0) {
-                        err.msg("Level specified after -excludeclass option must be one of (public|protected|package|private).");
-                    } else {
-                        RootDocToXML.classVisibilityLevel = level;
-                    }
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-excludemember")) {
-                if (options[i].length < 2) {
-                    err.msg("No level (public|protected|package|private) specified after -excludemember option.");
-                } else { 
-                    String level = options[i][1];
-                    if (level.compareTo("public") != 0 &&
-                        level.compareTo("protected") != 0 &&
-                        level.compareTo("package") != 0 &&
-                        level.compareTo("private") != 0) {
-                        err.msg("Level specified after -excludemember option must be one of (public|protected|package|private).");
-                    } else {
-                        RootDocToXML.memberVisibilityLevel = level;
-                    }
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-firstsentence")) {
+        switch (opt) {
+            case "-apiname":
+                return handleApiName(arguments);
+            case "-apidir":
+                return expectSingleValue(arguments, value -> RootDocToXML.outputDirectory = value,
+                        "No directory specified after -apidir option.");
+            case "-oldapi":
+                return handleApiFile(arguments, true);
+            case "-oldapidir":
+                return expectSingleValue(arguments, value -> JDiff.oldDirectory = value,
+                        "No directory specified after -oldapidir option.");
+            case "-newapi":
+                return handleApiFile(arguments, false);
+            case "-newapidir":
+                return expectSingleValue(arguments, value -> JDiff.newDirectory = value,
+                        "No directory specified after -newapidir option.");
+            case "-d":
+                return expectSingleValue(arguments, value -> HTMLReportGenerator.outputDir = value,
+                        "No directory specified after -d option.");
+            case "-javadocnew":
+                return expectSingleValue(arguments, value -> HTMLReportGenerator.newDocPrefix = value,
+                        "No location specified after -javadocnew option.");
+            case "-javadocold":
+                return expectSingleValue(arguments, value -> HTMLReportGenerator.oldDocPrefix = value,
+                        "No location specified after -javadocold option.");
+            case "-baseuri":
+                return expectSingleValue(arguments, value -> RootDocToXML.baseURI = value,
+                        "No base location specified after -baseURI option.");
+            case "-excludeclass":
+                return handleVisibility(arguments, true);
+            case "-excludemember":
+                return handleVisibility(arguments, false);
+            case "-firstsentence":
                 RootDocToXML.saveAllDocs = false;
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-docchanges")) {
+                return true;
+            case "-docchanges":
                 HTMLReportGenerator.reportDocChanges = true;
                 Diff.noDocDiffs = false;
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-incompatible")) {
-              HTMLReportGenerator.incompatibleChangesOnly = true;
-              continue;
-            }
-            if (options[i][0].toLowerCase().equals("-packagesonly")) {
+                return true;
+            case "-incompatible":
+                HTMLReportGenerator.incompatibleChangesOnly = true;
+                return true;
+            case "-packagesonly":
                 RootDocToXML.packagesOnly = true;
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-showallchanges")) {
+                return true;
+            case "-showallchanges":
                 Diff.showAllChanges = true;
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-nosuggest")) {
-                if (options[i].length < 2) {
-                    err.msg("No level (all|remove|add|change) specified after -nosuggest option.");
-                } else { 
-                    String level = options[i][1];
-                    if (level.compareTo("all") != 0 &&
-                        level.compareTo("remove") != 0 &&
-                        level.compareTo("add") != 0 &&
-                        level.compareTo("change") != 0) {
-                        err.msg("Level specified after -nosuggest option must be one of (all|remove|add|change).");
-                    } else {
-                        if (level.compareTo("removal") == 0)
-                            HTMLReportGenerator.noCommentsOnRemovals = true;
-                        else if (level.compareTo("add") == 0)
-                            HTMLReportGenerator.noCommentsOnAdditions = true;
-                        else if (level.compareTo("change") == 0)
-                            HTMLReportGenerator.noCommentsOnChanges = true;
-                        else if (level.compareTo("all") == 0) {
-                            HTMLReportGenerator.noCommentsOnRemovals = true;
-                            HTMLReportGenerator.noCommentsOnAdditions = true;
-                            HTMLReportGenerator.noCommentsOnChanges = true;
-                        }
-                    }
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-checkcomments")) {
+                return true;
+            case "-nosuggest":
+                return handleNoSuggest(arguments);
+            case "-checkcomments":
                 APIHandler.checkIsSentence = true;
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-retainnonprinting")) {
+                return true;
+            case "-retainnonprinting":
                 RootDocToXML.stripNonPrintables = false;
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-excludetag")) {
-                if (options[i].length < 2) {
-                    err.msg("No exclude tag specified after -excludetag option.");
-                } else { 
-                    RootDocToXML.excludeTag = options[i][1];
-                    RootDocToXML.excludeTag = RootDocToXML.excludeTag.trim();
+                return true;
+            case "-excludetag":
+                return expectSingleValue(arguments, value -> {
+                    RootDocToXML.excludeTag = value.trim();
                     RootDocToXML.doExclude = true;
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-stats")) {
+                }, "No exclude tag specified after -excludetag option.");
+            case "-stats":
                 HTMLReportGenerator.doStats = true;
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-doctitle")) {
-                if (options[i].length < 2) {
-                    err.msg("No HTML text specified after -doctitle option.");
-                } else { 
-                    HTMLReportGenerator.docTitle = options[i][1];
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-windowtitle")) {
-                if (options[i].length < 2) {
-                    err.msg("No text specified after -windowtitle option.");
-                } else { 
-                    HTMLReportGenerator.windowTitle = options[i][1];
-                }
-                continue;
-            }
-            if (options[i][0].toLowerCase().equals("-version")) {
+                return true;
+            case "-doctitle":
+                return expectSingleValue(arguments, value -> HTMLReportGenerator.docTitle = value,
+                        "No HTML text specified after -doctitle option.");
+            case "-windowtitle":
+                return expectSingleValue(arguments, value -> HTMLReportGenerator.windowTitle = value,
+                        "No text specified after -windowtitle option.");
+            case "-version":
                 System.out.println("JDiff version: " + JDiff.version);
-                System.exit(0);
-            }
-            if (options[i][0].toLowerCase().equals("-help")) {
+                exitAfterOptions = true;
+                return true;
+            case "-help":
                 usage();
-                System.exit(0);
-            }
-        }//for
-        if (!JDiff.writeXML && !JDiff.compareAPIs) {
-            err.msg("First use the -apiname option to generate an XML file for one API.");
-            err.msg("Then use the -apiname option again to generate another XML file for a different version of the API.");
-            err.msg("Finally use the -oldapi option and -newapi option to generate a report about how the APIs differ.");
+                exitAfterOptions = true;
+                return true;
+            default:
+                // Should not happen since options are pre-registered.
+                return true;
         }
-        return err.noErrorsFound;
-    }// validOptions()
+    }
+
+    private static boolean handleApiName(List<String> arguments) {
+        if (arguments.isEmpty()) {
+            reportError("No version identifier specified after -apiname option.");
+            return false;
+        }
+        if (JDiff.compareAPIs) {
+            reportError("Use the -apiname option, or the -oldapi and -newapi options, but not both.");
+            return false;
+        }
+        String filename = arguments.get(0);
+        RootDocToXML.apiIdentifier = filename;
+        filename = filename.replace(' ', '_');
+        RootDocToXML.outputFileName = filename + ".xml";
+        JDiff.writeXML = true;
+        JDiff.compareAPIs = false;
+        return true;
+    }
+
+    private static boolean handleApiFile(List<String> arguments, boolean oldApi) {
+        if (arguments.isEmpty()) {
+            reportError("No version identifier specified after " + (oldApi ? "-oldapi" : "-newapi") + " option.");
+            return false;
+        }
+        if (JDiff.writeXML) {
+            reportError("Use the -apiname or " + (oldApi ? "-oldapi" : "-newapi") + " option, but not both.");
+            return false;
+        }
+        String filename = arguments.get(0).replace(' ', '_');
+        if (oldApi) {
+            JDiff.oldFileName = filename + ".xml";
+        } else {
+            JDiff.newFileName = filename + ".xml";
+        }
+        JDiff.writeXML = false;
+        JDiff.compareAPIs = true;
+        return true;
+    }
+
+    private static boolean handleVisibility(List<String> arguments, boolean forClass) {
+        if (arguments.isEmpty()) {
+            reportError("No level (public|protected|package|private) specified after " +
+                    (forClass ? "-excludeclass" : "-excludemember") + " option.");
+            return false;
+        }
+        String level = arguments.get(0);
+        if (!level.equals("public") && !level.equals("protected") &&
+            !level.equals("package") && !level.equals("private")) {
+            reportError("Level specified after " + (forClass ? "-excludeclass" : "-excludemember") +
+                    " option must be one of (public|protected|package|private).");
+            return false;
+        }
+        if (forClass) {
+            RootDocToXML.classVisibilityLevel = level;
+        } else {
+            RootDocToXML.memberVisibilityLevel = level;
+        }
+        return true;
+    }
+
+    private static boolean handleNoSuggest(List<String> arguments) {
+        if (arguments.isEmpty()) {
+            reportError("No level (all|remove|add|change) specified after -nosuggest option.");
+            return false;
+        }
+        String level = arguments.get(0).toLowerCase(Locale.ROOT);
+        switch (level) {
+            case "all":
+                HTMLReportGenerator.noCommentsOnRemovals = true;
+                HTMLReportGenerator.noCommentsOnAdditions = true;
+                HTMLReportGenerator.noCommentsOnChanges = true;
+                break;
+            case "remove":
+                HTMLReportGenerator.noCommentsOnRemovals = true;
+                break;
+            case "add":
+                HTMLReportGenerator.noCommentsOnAdditions = true;
+                break;
+            case "change":
+                HTMLReportGenerator.noCommentsOnChanges = true;
+                break;
+            default:
+                reportError("Level specified after -nosuggest option must be one of (all|remove|add|change).");
+                return false;
+        }
+        return true;
+    }
+
+    private static boolean expectSingleValue(List<String> arguments, ValueConsumer consumer, String errorMessage) {
+        if (arguments.isEmpty()) {
+            reportError(errorMessage);
+            return false;
+        }
+        consumer.accept(arguments.get(0));
+        return true;
+    }
+
+    private static void appendOption(String option, List<String> arguments) {
+        cmdOptions += " " + option;
+        for (String arg : arguments) {
+            cmdOptions += " " + arg;
+        }
+    }
+
+    private static void reportError(String message) {
+        if (reporter != null) {
+            reporter.print(Diagnostic.Kind.ERROR, message);
+        } else {
+            System.err.println(message);
+        }
+    }
 
     /** Display the arguments for JDiff. */
     public static void usage() {
@@ -403,7 +276,7 @@ public class Options {
         System.err.println("  -apiname <Name of a version>");
         System.err.println("  -oldapi <Name of a version>");
         System.err.println("  -newapi <Name of a version>");
-        
+
         System.err.println("  Optional Arguments");
         System.err.println();
         System.err.println("  -d <directory> Destination directory for output HTML files");
@@ -413,11 +286,11 @@ public class Options {
         System.err.println("  -sourcepath <location of Java source files>");
         System.err.println("  -javadocnew <location of existing Javadoc files for the new API>");
         System.err.println("  -javadocold <location of existing Javadoc files for the old API>");
-        
+
         System.err.println("  -baseURI <base> Use \"base\" as the base location of the various DTDs and Schemas used by JDiff");
         System.err.println("  -excludeclass [public|protected|package|private] Exclude classes which are not public, protected etc");
         System.err.println("  -excludemember [public|protected|package|private] Exclude members which are not public, protected etc");
-        
+
         System.err.println("  -firstsentence Save only the first sentence of each comment block with the API.");
         System.err.println("  -docchanges Report changes in Javadoc comments between the APIs");
         System.err.println("  -incompatible Only report incompatible changes");
@@ -430,10 +303,59 @@ public class Options {
         System.err.println("");
         System.err.println("For more help, see jdiff.html");
     }
-    
+
     /** All the options passed on the command line. Logged to XML. */
     public static String cmdOptions = "";
 
-    /** Set to enable increased logging verbosity for debugging. */
-    private static boolean trace = false;
+    private interface ValueConsumer {
+        void accept(String value);
+    }
+
+    private static void registerOption(String name, int argumentCount, String parameters, String description) {
+        OPTIONS.put(name, new SimpleOption(name, argumentCount, parameters, description));
+    }
+
+    private static final class SimpleOption implements Doclet.Option {
+        private final String name;
+        private final int argumentCount;
+        private final String parameters;
+        private final String description;
+
+        SimpleOption(String name, int argumentCount, String parameters, String description) {
+            this.name = name;
+            this.argumentCount = argumentCount;
+            this.parameters = parameters;
+            this.description = description;
+        }
+
+        @Override
+        public int getArgumentCount() {
+            return argumentCount;
+        }
+
+        @Override
+        public String getDescription() {
+            return description;
+        }
+
+        @Override
+        public Kind getKind() {
+            return Kind.OTHER;
+        }
+
+        @Override
+        public List<String> getNames() {
+            return Collections.singletonList(name);
+        }
+
+        @Override
+        public String getParameters() {
+            return parameters;
+        }
+
+        @Override
+        public boolean process(String option, List<String> arguments) {
+            return Options.processOption(option, arguments);
+        }
+    }
 }

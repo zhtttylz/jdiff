@@ -1,7 +1,6 @@
 package jdiff;
 
 import java.util.*;
-import com.sun.javadoc.*;
 
 /**
  * Changes between two packages.

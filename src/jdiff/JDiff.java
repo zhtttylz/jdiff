@@ -1,12 +1,16 @@
 package jdiff;
 
-import com.sun.javadoc.*;
-
-import java.util.*;
 import java.io.*;
-import java.lang.reflect.*; // Used for invoking Javadoc indirectly
-import java.lang.Runtime;
 import java.lang.Process;
+import java.lang.Runtime;
+import java.lang.reflect.*; // Used for invoking Javadoc indirectly
+import java.util.*;
+import javax.lang.model.SourceVersion;
+import jdiff.doc.RootDoc;
+import jdiff.doc.RootDocImpl;
+import jdk.javadoc.doclet.Doclet;
+import jdk.javadoc.doclet.DocletEnvironment;
+import jdk.javadoc.doclet.Reporter;
 
 /**
  * Generates HTML describing the changes between two sets of Java source code.
@@ -14,22 +18,95 @@ import java.lang.Process;
  * See the file LICENSE.txt for copyright details.
  * @author Matthew Doar, mdoar@pobox.com.
  */
-public class JDiff extends Doclet {
+public class JDiff implements Doclet {
 
-    public static LanguageVersion languageVersion(){
-      return LanguageVersion.JAVA_1_5;
-    } 
-    /**
-     * Doclet-mandated start method. Everything begins here.
-     *
-     * @param root  a RootDoc object passed by Javadoc
-     * @return true if document generation succeeds
-     */
-    public static boolean start(RootDoc root) {
-        if (root != null)
+    private Reporter reporter;
+
+    @Override
+    public void init(Locale locale, Reporter reporter) {
+        this.reporter = reporter;
+        resetState();
+        Options.reset(reporter);
+    }
+
+    @Override
+    public String getName() {
+        return "JDiff";
+    }
+
+    @Override
+    public Set<Doclet.Option> getSupportedOptions() {
+        return Options.getSupportedOptions();
+    }
+
+    @Override
+    public SourceVersion getSupportedSourceVersion() {
+        return SourceVersion.latest();
+    }
+
+    @Override
+    public boolean run(DocletEnvironment environment) {
+        if (Options.shouldExit()) {
+            return true;
+        }
+        if (!writeXML && !compareAPIs) {
+            reportError("First use the -apiname option to generate an XML file for one API.\n" +
+                        "Then use the -apiname option again to generate another XML file for a different version of the API.\n" +
+                        "Finally use the -oldapi option and -newapi option to generate a report about how the APIs differ.");
+            return false;
+        }
+        RootDoc root = RootDocImpl.create(environment);
+        if (root != null) {
             System.out.println("JDiff: doclet started ...");
-        JDiff jd = new JDiff();
-        return jd.startGeneration(root);
+        }
+        return startGeneration(root);
+    }
+
+    private void reportError(String message) {
+        if (reporter != null) {
+            reporter.print(javax.tools.Diagnostic.Kind.ERROR, message);
+        } else {
+            System.err.println(message);
+        }
+    }
+
+    private void resetState() {
+        oldFileName = "old_java.xml";
+        oldDirectory = null;
+        newFileName = "new_java.xml";
+        newDirectory = null;
+        writeXML = false;
+        compareAPIs = false;
+
+        RootDocToXML.outputFileName = null;
+        RootDocToXML.apiIdentifier = null;
+        RootDocToXML.outputDirectory = null;
+        RootDocToXML.classVisibilityLevel = "protected";
+        RootDocToXML.memberVisibilityLevel = "protected";
+        RootDocToXML.saveAllDocs = true;
+        RootDocToXML.doExclude = false;
+        RootDocToXML.excludeTag = null;
+        RootDocToXML.baseURI = "http://www.w3.org";
+        RootDocToXML.stripNonPrintables = true;
+        RootDocToXML.packagesOnly = false;
+        RootDocToXML.addSrcInfo = false;
+
+        HTMLReportGenerator.outputDir = null;
+        HTMLReportGenerator.reportDocChanges = false;
+        HTMLReportGenerator.incompatibleChangesOnly = false;
+        HTMLReportGenerator.noCommentsOnRemovals = false;
+        HTMLReportGenerator.noCommentsOnAdditions = false;
+        HTMLReportGenerator.noCommentsOnChanges = false;
+        HTMLReportGenerator.newDocPrefix = "../";
+        HTMLReportGenerator.oldDocPrefix = null;
+        HTMLReportGenerator.doStats = false;
+        HTMLReportGenerator.docTitle = null;
+        HTMLReportGenerator.windowTitle = null;
+
+        Diff.noDocDiffs = true;
+        Diff.showAllChanges = false;
+
+        APIHandler.checkIsSentence = false;
     }
 
     /**
@@ -134,36 +211,6 @@ public class JDiff extends Doclet {
        return true;
     }
 
-//
-// Option processing
-// 
-
-    /**
-     * This method is called by Javadoc to
-     * parse the options it does not recognize. It then calls
-     * {@link #validOptions} to validate them.
-     *
-     * @param option  a String containing an option
-     * @return an int telling how many components that option has
-     */
-    public static int optionLength(String option) {
-        return Options.optionLength(option);
-    }
-
-    /**
-     * After parsing the available options using {@link #optionLength},
-     * Javadoc invokes this method with an array of options-arrays.
-     *
-     * @param options   an array of String arrays, one per option
-     * @param reporter  a DocErrorReporter for generating error messages
-     * @return true if no errors were found, and all options are
-     *         valid
-     */
-    public static boolean validOptions(String[][] options, 
-                                       DocErrorReporter reporter) {
-        return Options.validOptions(options, reporter);
-    }
-    
     /** 
      * This method is only called when running JDiff as a standalone
      * application, and uses ANT to execute the build configuration in the 

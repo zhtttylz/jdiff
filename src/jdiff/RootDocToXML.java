@@ -1,12 +1,19 @@
 package jdiff;
 
-import com.sun.javadoc.*;
-import com.sun.javadoc.ParameterizedType;
-import com.sun.javadoc.Type;
+import jdiff.doc.ClassDoc;
+import jdiff.doc.ConstructorDoc;
+import jdiff.doc.Doc;
+import jdiff.doc.FieldDoc;
+import jdiff.doc.MethodDoc;
+import jdiff.doc.PackageDoc;
+import jdiff.doc.Parameter;
+import jdiff.doc.ProgramElementDoc;
+import jdiff.doc.RootDoc;
+import jdiff.doc.Tag;
+import jdiff.doc.Type;
 
 import java.util.*;
 import java.io.*;
-import java.lang.reflect.*;
 
 /**
  * Converts a Javadoc RootDoc object into a representation in an 
@@ -291,7 +298,7 @@ public class RootDocToXML {
             classes = (ClassDoc[])classList.toArray(classes);
             processClasses(classes, pkgName);
 
-            addPkgDocumentation(root, pd[i], 2);
+            addPkgDocumentation(pd[i], 2);
 
             outputFile.println("</package>");
         }
@@ -419,35 +426,10 @@ public class RootDocToXML {
      * @param ped The given program element.
      */
     public void addSourcePosition(ProgramElementDoc ped, int indent) {
-        if (!addSrcInfo)
+        if (!addSrcInfo) {
             return;
-        if (JDiff.javaVersion.startsWith("1.1") || 
-            JDiff.javaVersion.startsWith("1.2") || 
-            JDiff.javaVersion.startsWith("1.3")) {
-            return; // position() only appeared in J2SE1.4
         }
-        try {
-            // Could cache the method for improved performance
-            Class c = ProgramElementDoc.class;
-            Method m = c.getMethod("position", null);
-            Object sp = m.invoke(ped, null);
-            if (sp != null) {
-                for (int i = 0; i < indent; i++) outputFile.print(" ");
-                outputFile.println("src=\"" + sp + "\"");
-            }
-        } catch (NoSuchMethodException e2) {
-            System.err.println("Error: method \"position\" not found");
-            e2.printStackTrace();
-        } catch (IllegalAccessException e4) {
-            System.err.println("Error: class not permitted to be instantiated");
-            e4.printStackTrace();
-        } catch (InvocationTargetException e5) {
-            System.err.println("Error: method \"position\" could not be invoked");
-            e5.printStackTrace();
-        } catch (Exception e6) {
-            System.err.println("Error: ");
-            e6.printStackTrace();
-        }
+        // Source position information is not available from the current doclet API.
     }
 
     /**
@@ -509,13 +491,13 @@ public class RootDocToXML {
      *
      * @param cd An array of ClassDoc objects
      */
-    public void processExceptions(ClassDoc[] cd) {
-        if (trace) System.out.println("PROCESSING EXCEPTIONS, number=" + cd.length);
-        for (int i = 0; i < cd.length; i++) {
-            String exceptionName = cd[i].name();
+    public void processExceptions(Type[] exceptions) {
+        if (trace) System.out.println("PROCESSING EXCEPTIONS, number=" + exceptions.length);
+        for (int i = 0; i < exceptions.length; i++) {
+            String exceptionName = exceptions[i].qualifiedTypeName();
             if (trace) System.out.println("PROCESSING EXCEPTION: " + exceptionName);
             outputFile.print("      <exception name=\"" + exceptionName + "\" type=\"");
-            emitType(cd[i]);
+            emitType(exceptions[i]);
             outputFile.println("\"/>");
         }//for
     }//processExceptions()
@@ -537,7 +519,7 @@ public class RootDocToXML {
             if (!shownElement(md[i], memberVisibilityLevel))
                 continue;
             outputFile.print("    <method name=\"" + methodName + "\"");
-            com.sun.javadoc.Type retType = md[i].returnType();
+            Type retType = md[i].returnType();
             if (retType.qualifiedTypeName().compareTo("void") == 0) {
                 // Don't add a return attribute if the return type is void
                 outputFile.println();
@@ -610,7 +592,7 @@ public class RootDocToXML {
      *
      * @param type A Type object.
      */
-    public void emitType(com.sun.javadoc.Type type) {
+    public void emitType(Type type) {
         String name = buildEmittableTypeString(type);
         if (name == null)
             return;
@@ -624,9 +606,9 @@ public class RootDocToXML {
      * @param type A Type object
      * @return The emittable type name
      */
-    private String buildEmittableTypeString(com.sun.javadoc.Type type) {
+    private String buildEmittableTypeString(Type type) {
         if (type == null) {
-    	    return null;
+            return null;
         }
       // type.toString() returns the fully qualified name of the type
       // including the dimension and the parameters we just need to
@@ -857,72 +839,8 @@ public class RootDocToXML {
      * end element tag.  Due to the difficulties of converting incorrect HTML
      * to XHTML, the first option is used.
      */
-    public void addPkgDocumentation(RootDoc root, PackageDoc pd, int indent) {
-        String rct = null;
-        String filename = pd.name();
-        try {
-            // See if the source path was specified as part of the
-            // options and prepend it if it was.
-            String srcLocation = null;
-            String[][] options = root.options();
-            for (int opt = 0; opt < options.length; opt++) {
-                if ((options[opt][0]).compareTo("-sourcepath") == 0) {
-                    srcLocation = options[opt][1];
-                    break;
-                }
-            }
-            filename = filename.replace('.', JDiff.DIR_SEP.charAt(0));
-            if (srcLocation != null) {
-                // Make a relative location absolute 
-                if (srcLocation.startsWith("..")) {
-                    String curDir = System.getProperty("user.dir");
-                    while (srcLocation.startsWith("..")) {
-                        srcLocation = srcLocation.substring(3);
-                        int idx = curDir.lastIndexOf(JDiff.DIR_SEP);
-                        curDir = curDir.substring(0, idx+1);
-                    }
-                    srcLocation = curDir + srcLocation;
-                }
-                filename = srcLocation + JDiff.DIR_SEP + filename;
-            }
-            // Try both ".htm" and ".html"
-            filename += JDiff.DIR_SEP + "package.htm";
-            File f2 = new File(filename);
-            if (!f2.exists()) {
-                filename += "l";
-            }
-            FileInputStream f = new FileInputStream(filename);
-            BufferedReader d = new BufferedReader(new InputStreamReader(f));
-            String str = d.readLine();
- 	    // Ignore everything except the lines between <body> elements
-	    boolean inBody = false;
-	    while(str != null) {
-                if (!inBody) {
-		    if (str.toLowerCase().trim().startsWith("<body")) {
-			inBody = true;
-		    }
-		    str = d.readLine(); // Get the next line
-		    continue; // Ignore the line
-		} else {
-		    if (str.toLowerCase().trim().startsWith("</body")) {
-			inBody = false;
-			continue; // Ignore the line
-		    }
-		}
-                if (rct == null)
-                    rct = str + "\n";
-                else
-                    rct += str + "\n";
-                str = d.readLine();
-            }
-        }  catch(java.io.FileNotFoundException e) {
-            // If it doesn't exist, that's fine
-            if (trace)
-                System.out.println("No package level documentation file at '" + filename + "'");
-        } catch(java.io.IOException e) {
-            System.out.println("Error reading file \"" + filename + "\": " + e.getMessage());
-            System.exit(5);
-        }     
+    public void addPkgDocumentation(PackageDoc pd, int indent) {
+        String rct = pd == null ? null : pd.getRawCommentText();
         if (rct != null) {
             rct = stripNonPrintingChars(rct, (Doc)pd);
             rct = rct.trim();
