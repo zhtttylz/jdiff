@@ -62,34 +62,16 @@ public class JDiff implements Doclet {
         if (environment != null) {
             System.out.println("JDiff: doclet started ...");
         }
-        return startGeneration(fromEnvironment(environment));
+        return startGeneration(environment);
     }
 
-    public static final class RootDoc {
-        private final DocletEnvironment environment;
-
-        private RootDoc(DocletEnvironment environment) {
-            this.environment = environment;
-        }
-    }
-
-    private static RootDoc fromEnvironment(DocletEnvironment environment) {
-        if (environment == null) {
-            return null;
-        }
-        return new RootDoc(environment);
-    }
-
-    private static DocletEnvironment toEnvironment(RootDoc root) {
-        return root == null ? null : root.environment;
-    }
     /**
      * Doclet-mandated start method. Everything begins here.
      *
      * @param root  a RootDoc object passed by Javadoc
      * @return true if document generation succeeds
      */
-    public static boolean start(RootDoc root) {
+    public static boolean start(DocletEnvironment root) {
         if (root != null)
             System.out.println("JDiff: doclet started ...");
         JDiff jd = new JDiff();
@@ -99,21 +81,20 @@ public class JDiff implements Doclet {
     /**
      * Generate the summary of the APIs.
      *
-     * @param root  the RootDoc object passed by Javadoc
+     * @param root the DocletEnvironment object passed by Javadoc
      * @return true if no problems encountered within JDiff
      */
-    protected boolean startGeneration(RootDoc newRoot) {
-        DocletEnvironment environment = toEnvironment(newRoot);
+    protected boolean startGeneration(DocletEnvironment root) {
         long startTime = System.currentTimeMillis();
 
         // Open the file where the XML representing the API will be stored.
         // and generate the XML for the API into it.
         if (writeXML) {
-            if (environment == null) {
+            if (root == null) {
                 System.out.println("Error: no DocletEnvironment available for XML generation");
                 return false;
             }
-            RootDocToXML.writeXML(environment);
+            RootDocToXML.writeXML(root);
         }
 
         if (compareAPIs) {
