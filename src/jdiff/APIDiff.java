@@ -1,7 +1,6 @@
 package jdiff;
 
 import java.util.*;
-import com.sun.javadoc.*;
 
 /**
  * The class contains the changes between two API objects; packages added,
