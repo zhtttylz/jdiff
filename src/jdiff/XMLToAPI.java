@@ -11,6 +11,10 @@ import org.xml.sax.XMLReader;
 import org.xml.sax.InputSource;
 import org.xml.sax.helpers.*;
 
+import javax.xml.parsers.ParserConfigurationException;
+import javax.xml.parsers.SAXParser;
+import javax.xml.parsers.SAXParserFactory;
+
 /**
  * Creates an API object from an XML file. The API object is the internal 
  * representation of an API.
@@ -49,16 +53,26 @@ public class XMLToAPI {
             try {
                 String parserName = System.getProperty("org.xml.sax.driver");
                 if (parserName == null) {
-                    parser = org.xml.sax.helpers.XMLReaderFactory.createXMLReader("org.apache.xerces.parsers.SAXParser");
+                    parser = org.xml.sax.helpers.XMLReaderFactory.createXMLReader();
                 } else {
                     // Let the underlying mechanisms try to work out which 
                     // class to instantiate
                     parser = org.xml.sax.helpers.XMLReaderFactory.createXMLReader();
                 }
             } catch (SAXException saxe) {
-                System.out.println("SAXException: " + saxe);
-                saxe.printStackTrace();
-                System.exit(1);
+                try {
+                    SAXParserFactory factory = SAXParserFactory.newInstance();
+                    factory.setNamespaceAware(true);
+                    factory.setValidating(validateXML);
+                    SAXParser saxParser = factory.newSAXParser();
+                    parser = saxParser.getXMLReader();
+                } catch (ParserConfigurationException | SAXException fallbackException) {
+                    System.out.println("SAXException: " + saxe);
+                    saxe.printStackTrace();
+                    System.out.println("Failed to create XMLReader via SAXParserFactory: " + fallbackException);
+                    fallbackException.printStackTrace();
+                    System.exit(1);
+                }
             }
             if (validateXML) {
                 parser.setFeature("http://xml.org/sax/features/namespaces", true);
