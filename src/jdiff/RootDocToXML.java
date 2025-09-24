@@ -764,7 +764,6 @@ public class RootDocToXML {
         } else {
             outputFile.print("deprecated=\"not deprecated\"");
         }
-        outputFile.println();
     } //addQualifiers()
 
     private String extractDeprecated(String docComment) {
