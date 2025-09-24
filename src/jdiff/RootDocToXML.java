@@ -353,6 +353,14 @@ public class RootDocToXML {
         if (element == null) {
             return null;
         }
+
+        if (element.getKind() == ElementKind.MODULE) {
+            if (trace) {
+                System.out.println("Skipping doc comment lookup for module '" + element + "'");
+            }
+            return null;
+        }
+
         try {
             return elements.getDocComment(element);
         } catch (IllegalArgumentException e) {
