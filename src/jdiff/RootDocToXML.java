@@ -275,9 +275,11 @@ public class RootDocToXML {
                 packageMap.put(pkgName, pkg);
             } else if (element instanceof TypeElement) {
                 TypeElement type = (TypeElement) element;
-                PackageElement pkg = elements.getPackageOf(type);
-                String pkgName = pkg.getQualifiedName().toString();
-                packageMap.put(pkgName, pkg);
+                PackageElement pkg = safeGetPackageOf(type);
+                String pkgName = packageNameOf(type, pkg);
+                if (pkg != null || !packageMap.containsKey(pkgName)) {
+                    packageMap.put(pkgName, pkg);
+                }
                 specifiedClasses.computeIfAbsent(pkgName, k -> new ArrayList<TypeElement>()).add(type);
             }
         }
@@ -289,12 +291,14 @@ public class RootDocToXML {
                 packageMap.put(pkgName, pkg);
             } else if (element instanceof TypeElement) {
                 TypeElement type = (TypeElement) element;
-                PackageElement pkg = elements.getPackageOf(type);
-                String pkgName = pkg.getQualifiedName().toString();
+                PackageElement pkg = safeGetPackageOf(type);
+                String pkgName = packageNameOf(type, pkg);
                 if (pkgName.length() == 0 && packagesOnly) {
                     continue;
                 }
-                packageMap.put(pkgName, pkg);
+                if (pkg != null || !packageMap.containsKey(pkgName)) {
+                    packageMap.put(pkgName, pkg);
+                }
                 classesByPackage.computeIfAbsent(pkgName, k -> new ArrayList<TypeElement>()).add(type);
             }
         }
@@ -332,6 +336,35 @@ public class RootDocToXML {
             outputFile.println("</package>");
         }
     } // processPackages
+
+
+    private PackageElement safeGetPackageOf(TypeElement type) {
+        try {
+            return elements.getPackageOf(type);
+        } catch (IllegalArgumentException e) {
+            if (trace) {
+                System.out.println("Unable to resolve package for type '" + type + "': " + e);
+            }
+            return null;
+        }
+    }
+
+    private String packageNameOf(TypeElement type, PackageElement pkg) {
+        if (pkg != null) {
+            return pkg.getQualifiedName().toString();
+        }
+        Element enclosing = type.getEnclosingElement();
+        while (enclosing != null && !(enclosing instanceof PackageElement)) {
+            enclosing = enclosing.getEnclosingElement();
+        }
+        if (enclosing instanceof PackageElement) {
+            return ((PackageElement) enclosing).getQualifiedName().toString();
+        }
+        String qualifiedName = type.getQualifiedName().toString();
+        int lastDot = qualifiedName.lastIndexOf('.');
+        return (lastDot >= 0) ? qualifiedName.substring(0, lastDot) : "";
+    }
+
 
     /**
      * Process classes and interfaces.
