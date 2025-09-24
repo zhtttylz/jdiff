@@ -310,7 +310,7 @@ public class RootDocToXML {
             if (pkgName.length() == 0 && packagesOnly) {
                 continue;
             }
-            String pkgComment = pkg == null ? null : elements.getDocComment(pkg);
+            String pkgComment = safeGetDocComment(pkg);
             if (!shownElement(pkg, pkgComment, null))
                 continue;
 
@@ -349,6 +349,20 @@ public class RootDocToXML {
         }
     }
 
+    private String safeGetDocComment(Element element) {
+        if (element == null) {
+            return null;
+        }
+        try {
+            return elements.getDocComment(element);
+        } catch (IllegalArgumentException e) {
+            if (trace) {
+                System.out.println("Unable to resolve doc comment for element '" + element + "': " + e);
+            }
+            return null;
+        }
+    }
+
     private String packageNameOf(TypeElement type, PackageElement pkg) {
         if (pkg != null) {
             return pkg.getQualifiedName().toString();
@@ -374,7 +388,7 @@ public class RootDocToXML {
             return;
         classes.sort(Comparator.comparing(type -> type.getSimpleName().toString()));
         for (TypeElement type : classes) {
-            String docComment = elements.getDocComment(type);
+            String docComment = safeGetDocComment(type);
             if (!shownElement(type, docComment, classVisibilityLevel))
                 continue;
             boolean isInterface = type.getKind().isInterface();
@@ -443,7 +457,7 @@ public class RootDocToXML {
         for (ExecutableElement ctor : ctors) {
             String ctorName = ctor.getSimpleName().toString();
             if (trace) System.out.println("PROCESSING CONSTRUCTOR: " + ctorName);
-            String docComment = elements.getDocComment(ctor);
+            String docComment = safeGetDocComment(ctor);
             if (!shownElement(ctor, docComment, memberVisibilityLevel))
                 continue;
             outputFile.print("    <constructor name=\"" + ctorName + "\"");
@@ -509,7 +523,7 @@ public class RootDocToXML {
         for (ExecutableElement method : methods) {
             String methodName = method.getSimpleName().toString();
             if (trace) System.out.println("PROCESSING METHOD: " + methodName);
-            String docComment = elements.getDocComment(method);
+            String docComment = safeGetDocComment(method);
             if (!shownElement(method, docComment, memberVisibilityLevel))
                 continue;
             outputFile.print("    <method name=\"" + methodName + "\"");
@@ -558,7 +572,7 @@ public class RootDocToXML {
         for (VariableElement field : fields) {
             String fieldName = field.getSimpleName().toString();
             if (trace) System.out.println("PROCESSING FIELD: " + fieldName);
-            String docComment = elements.getDocComment(field);
+            String docComment = safeGetDocComment(field);
             if (!shownElement(field, docComment, memberVisibilityLevel))
                 continue;
             outputFile.print("    <field name=\"" + fieldName + "\"");
