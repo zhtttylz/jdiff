@@ -464,6 +464,13 @@ public class RootDocToXML {
         if (trace) System.out.println("PROCESSING CONSTRUCTORS, number=" + ctors.size());
         for (ExecutableElement ctor : ctors) {
             String ctorName = ctor.getSimpleName().toString();
+            if (ctorName.isEmpty() || ctorName.indexOf('<') != -1 || ctorName.indexOf('>') != -1) {
+                ctorName = type.getSimpleName().toString();
+            }
+            if (ctorName.isEmpty()) {
+                ctorName = type.toString();
+            }
+            ctorName = ctorName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
             if (trace) System.out.println("PROCESSING CONSTRUCTOR: " + ctorName);
             String docComment = safeGetDocComment(ctor);
             if (!shownElement(ctor, docComment, memberVisibilityLevel))
